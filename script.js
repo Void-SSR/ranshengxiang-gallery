@@ -26,6 +26,13 @@ const PREVIEW_READY_KEY = 'ranshengxiang-previews-ready';
 const ORIGINAL_VERSION = '20260722-originals';
 const ORIGINAL_CACHE = `ranshengxiang-originals-${ORIGINAL_VERSION}`;
 const ORIGINAL_READY_KEY = 'ranshengxiang-originals-ready';
+const MEBIBYTE = 1024 * 1024;
+const PREVIEW_SAFE_SPACE = 80 * MEBIBYTE;
+const ORIGINAL_FULL_SAFE_SPACE = 350 * MEBIBYTE;
+const ORIGINAL_PARTIAL_START = 150 * MEBIBYTE;
+const ORIGINAL_SPACE_RESERVE = 100 * MEBIBYTE;
+const ORIGINAL_PARTIAL_CAP = 100 * MEBIBYTE;
+const ORIGINAL_AVERAGE_BYTES = Math.ceil((205 * MEBIBYTE) / 80);
 
 let catalog = [];
 let state = { selectedIds: [], groups: [] };
@@ -92,6 +99,133 @@ function markCacheVersionReady(key, version) {
   try { localStorage.setItem(key, version); } catch { /* Private mode may reject persistence. */ }
 }
 
+function clearCacheVersionReady(key) {
+  try { localStorage.removeItem(key); } catch { /* Storage may be unavailable. */ }
+}
+
+async function storageEstimate() {
+  if (!navigator.storage?.estimate) return { supported: false, available: null, quota: null, usage: null };
+  try {
+    const estimate = await navigator.storage.estimate();
+    const quota = Number(estimate.quota);
+    const usage = Number(estimate.usage);
+    if (!Number.isFinite(quota) || !Number.isFinite(usage)) throw new Error('Invalid storage estimate');
+    return { supported: true, quota, usage, available: Math.max(0, quota - usage) };
+  } catch {
+    return { supported: false, available: null, quota: null, usage: null };
+  }
+}
+
+function localStorageTestMode() {
+  if (!['localhost', '127.0.0.1'].includes(location.hostname)) return null;
+  const value = new URLSearchParams(location.search).get('storageTest');
+  return ['low', 'partial', 'full'].includes(value) ? value : null;
+}
+
+function connectionAllowsBulkCache() {
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!connection) return true;
+  if (connection.saveData) return false;
+  return !['slow-2g', '2g'].includes(connection.effectiveType);
+}
+
+function previewCachePlan(estimate) {
+  const testMode = localStorageTestMode();
+  if (testMode === 'low') return { mode: 'priority', entries: catalog.filter((entry) => entry.category === 'A') };
+  if (testMode === 'partial' || testMode === 'full') return { mode: 'full', entries: catalog };
+  if (estimate.available !== null && estimate.available < PREVIEW_SAFE_SPACE) {
+    return { mode: 'priority', entries: catalog.filter((entry) => entry.category === 'A') };
+  }
+  return { mode: 'full', entries: catalog };
+}
+
+function originalCachePlan(estimate) {
+  const testMode = localStorageTestMode();
+  if (testMode === 'low') return { mode: 'ondemand', budget: 0 };
+  if (testMode === 'partial') return { mode: 'partial', budget: 48 * MEBIBYTE };
+  if (testMode === 'full') return { mode: 'full', budget: Infinity };
+  if (!connectionAllowsBulkCache()) return { mode: 'ondemand', budget: 0 };
+  if (estimate.available === null || estimate.available >= ORIGINAL_FULL_SAFE_SPACE) {
+    return { mode: 'full', budget: Infinity };
+  }
+  if (estimate.available >= ORIGINAL_PARTIAL_START) {
+    return {
+      mode: 'partial',
+      budget: Math.min(ORIGINAL_PARTIAL_CAP, Math.max(0, estimate.available - ORIGINAL_SPACE_RESERVE)),
+    };
+  }
+  return { mode: 'ondemand', budget: 0 };
+}
+
+async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) return false;
+  try {
+    if (await navigator.storage.persisted?.()) return true;
+    return Boolean(await navigator.storage.persist());
+  } catch {
+    return false;
+  }
+}
+
+function armPersistentStorageRequest() {
+  document.addEventListener('pointerdown', () => { requestPersistentStorage(); }, { once: true, capture: true });
+}
+
+async function cacheHealthy(cacheName, urls) {
+  if (!('caches' in window) || !urls.length) return false;
+  try {
+    const cache = await caches.open(cacheName);
+    const sentinels = urls.length === 1 ? urls : [urls[0], urls[urls.length - 1]];
+    const matches = await Promise.all(sentinels.map((url) => cache.match(url)));
+    return matches.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function fetchWithRetry(url, options, attempts = 2) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) await wait(350 * (2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
+async function preloadWithoutCache(urls) {
+  let cursor = 0;
+  let completed = 0;
+  let failures = 0;
+
+  async function worker() {
+    while (cursor < urls.length) {
+      const url = urls[cursor];
+      cursor += 1;
+      await new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => resolve();
+        image.onerror = () => { failures += 1; resolve(); };
+        image.src = url;
+      });
+      completed += 1;
+      updatePreloadProgress(completed, urls.length);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(6, urls.length) }, worker));
+  return failures === 0;
+}
+
 function updatePreloadProgress(done, total) {
   const percentage = total ? Math.round((done / total) * 100) : 100;
   preloadCount.textContent = String(done);
@@ -106,39 +240,38 @@ function hidePreloadGate(message = '高清方案已准备完成') {
   }, 420);
 }
 
-async function cachePreviewSet() {
-  const urls = catalog.map(previewSource);
+async function cachePreviewSet(plan) {
+  const urls = plan.entries.map(previewSource);
   updatePreloadProgress(0, urls.length);
+  preloadCount.nextElementSibling.textContent = `/ ${urls.length}`;
 
-  if (cacheVersionReady(PREVIEW_READY_KEY, PREVIEW_VERSION)) {
-    updatePreloadProgress(urls.length, urls.length);
-    return;
+  if (plan.mode === 'full' && cacheVersionReady(PREVIEW_READY_KEY, PREVIEW_VERSION)) {
+    if (await cacheHealthy(PREVIEW_CACHE, urls)) {
+      updatePreloadProgress(urls.length, urls.length);
+      return { complete: true, mode: plan.mode };
+    }
+    clearCacheVersionReady(PREVIEW_READY_KEY);
   }
 
   if (!('caches' in window)) {
-    let completed = 0;
-    await Promise.all(urls.map((url) => new Promise((resolve) => {
-      const image = new Image();
-      image.onload = image.onerror = () => {
-        completed += 1;
-        updatePreloadProgress(completed, urls.length);
-        resolve();
-      };
-      image.src = url;
-    })));
-    return;
+    return { complete: await preloadWithoutCache(urls), mode: plan.mode };
   }
 
   if ('serviceWorker' in navigator) {
     try {
-      await navigator.serviceWorker.register('./service-worker.js?v=20260722-cache');
+      await navigator.serviceWorker.register('./service-worker.js?v=20260722-adaptive');
       await navigator.serviceWorker.ready;
     } catch {
       // Cache Storage still works as the first-load fallback.
     }
   }
 
-  const cache = await caches.open(PREVIEW_CACHE);
+  let cache;
+  try {
+    cache = await caches.open(PREVIEW_CACHE);
+  } catch {
+    return { complete: await preloadWithoutCache(urls), mode: plan.mode };
+  }
   let cursor = 0;
   let completed = 0;
   let failures = 0;
@@ -150,8 +283,7 @@ async function cachePreviewSet() {
       try {
         const cached = await cache.match(url);
         if (!cached) {
-          const response = await fetch(url, { cache: 'reload' });
-          if (!response.ok) throw new Error(`图片加载失败: ${url}`);
+          const response = await fetchWithRetry(url, { cache: 'reload' });
           await cache.put(url, response.clone());
         }
       } catch {
@@ -164,16 +296,31 @@ async function cachePreviewSet() {
   }
 
   await Promise.all(Array.from({ length: Math.min(6, urls.length) }, worker));
-  if (!failures) markCacheVersionReady(PREVIEW_READY_KEY, PREVIEW_VERSION);
+  const complete = failures === 0;
+  if (complete && plan.mode === 'full') markCacheVersionReady(PREVIEW_READY_KEY, PREVIEW_VERSION);
+  return { complete, mode: plan.mode };
 }
 
-async function cacheOriginalSet() {
-  if (cacheVersionReady(ORIGINAL_READY_KEY, ORIGINAL_VERSION)) return;
-  const orderedEntries = ['A', 'B', 'C'].flatMap((category) => catalog.filter((entry) => entry.category === category));
+async function cacheOriginalSet(plan) {
+  if (plan.mode === 'ondemand') return;
+  const selectedEntries = state.selectedIds.map(item).filter(Boolean);
+  const selectedIds = new Set(selectedEntries.map((entry) => entry.id));
+  const orderedEntries = [
+    ...selectedEntries,
+    ...['A', 'B', 'C'].flatMap((category) => catalog.filter((entry) => entry.category === category && !selectedIds.has(entry.id))),
+  ];
   const urls = orderedEntries.map(originalSource);
 
+  if (plan.mode === 'full' && cacheVersionReady(ORIGINAL_READY_KEY, ORIGINAL_VERSION)) {
+    if (await cacheHealthy(ORIGINAL_CACHE, urls)) return;
+    clearCacheVersionReady(ORIGINAL_READY_KEY);
+  }
+
   if (!('caches' in window)) {
-    for (const url of urls) {
+    const fallbackLimit = plan.mode === 'partial'
+      ? Math.max(1, Math.floor(plan.budget / ORIGINAL_AVERAGE_BYTES))
+      : urls.length;
+    for (const url of urls.slice(0, fallbackLimit)) {
       try {
         await fetch(url, { cache: 'force-cache', priority: 'low' });
       } catch {
@@ -183,24 +330,29 @@ async function cacheOriginalSet() {
     return;
   }
 
-  const cache = await caches.open(ORIGINAL_CACHE);
+  let cache;
+  try {
+    cache = await caches.open(ORIGINAL_CACHE);
+  } catch {
+    return;
+  }
   let cursor = 0;
   let storageUnavailable = false;
   let failures = 0;
+  let storedBytes = 0;
 
   async function worker() {
-    while (cursor < urls.length && !storageUnavailable) {
+    while (cursor < urls.length && !storageUnavailable && storedBytes < plan.budget) {
       const url = urls[cursor];
       cursor += 1;
       try {
         const cached = await cache.match(url);
         if (cached) continue;
-        const response = await fetch(url, { cache: 'reload', priority: 'low' });
-        if (!response.ok) {
-          failures += 1;
-          continue;
-        }
+        const response = await fetchWithRetry(url, { cache: 'reload', priority: 'low' });
+        const responseBytes = Number(response.headers.get('content-length')) || ORIGINAL_AVERAGE_BYTES;
+        if (plan.mode === 'partial' && storedBytes + responseBytes > plan.budget) break;
         await cache.put(url, response.clone());
+        storedBytes += responseBytes;
       } catch (error) {
         failures += 1;
         if (error?.name === 'QuotaExceededError') storageUnavailable = true;
@@ -209,11 +361,14 @@ async function cacheOriginalSet() {
   }
 
   await Promise.all([worker(), worker()]);
-  if (!failures && !storageUnavailable) markCacheVersionReady(ORIGINAL_READY_KEY, ORIGINAL_VERSION);
+  if (plan.mode === 'full' && cursor >= urls.length && !failures && !storageUnavailable) {
+    markCacheVersionReady(ORIGINAL_READY_KEY, ORIGINAL_VERSION);
+  }
 }
 
-function scheduleOriginalCache() {
-  const start = () => cacheOriginalSet().catch(() => {});
+function scheduleOriginalCache(plan) {
+  document.documentElement.dataset.originalCache = plan.mode;
+  const start = () => cacheOriginalSet(plan).catch(() => {});
   if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 2500 });
   else setTimeout(start, 1200);
 }
@@ -515,16 +670,22 @@ function showToast(message) {
 async function init() {
   setScreenMode(screenMode, false);
   setDetailsHidden(detailsHidden);
+  armPersistentStorageRequest();
   catalog = await fetch('./catalog.json', { cache: 'no-store' }).then((response) => {
     if (!response.ok) throw new Error('方案目录加载失败');
     return response.json();
   });
-  preloadCount.nextElementSibling.textContent = `/ ${catalog.length}`;
-  await cachePreviewSet();
+  const initialStorage = await storageEstimate();
+  const previewPlan = previewCachePlan(initialStorage);
+  document.documentElement.dataset.previewCache = previewPlan.mode;
+  const previewResult = await cachePreviewSet(previewPlan);
   state = loadLocalState();
   render();
-  hidePreloadGate();
-  scheduleOriginalCache();
+  hidePreloadGate(previewResult.complete
+    ? (previewResult.mode === 'full' ? '高清方案已准备完成' : '重点高清方案已准备完成')
+    : '部分图片将在浏览时继续加载');
+  const storageAfterPreview = await storageEstimate();
+  scheduleOriginalCache(originalCachePlan(storageAfterPreview));
 }
 
 document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => setView(button.dataset.view)));

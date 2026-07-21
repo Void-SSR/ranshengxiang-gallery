@@ -25,12 +25,19 @@ self.addEventListener('fetch', (event) => {
   if (!isPreview && !isOriginal) return;
 
   event.respondWith((async () => {
-    const cache = await caches.open(isPreview ? PREVIEW_CACHE : ORIGINAL_CACHE);
+    let cache;
+    try {
+      cache = await caches.open(isPreview ? PREVIEW_CACHE : ORIGINAL_CACHE);
+    } catch {
+      return fetch(event.request);
+    }
     const cached = await cache.match(event.request);
     if (cached) return cached;
 
     const response = await fetch(event.request);
-    if (response.ok) await cache.put(event.request, response.clone());
+    if (response.ok) {
+      try { await cache.put(event.request, response.clone()); } catch { /* The network response still remains usable. */ }
+    }
     return response;
   })());
 });
