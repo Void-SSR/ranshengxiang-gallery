@@ -10,3 +10,11 @@
 - 列表使用高清预览图，点击放大加载原图
 
 客户选择保存在各自浏览器的 `localStorage` 中，不会在不同设备之间同步。
+
+## 重新生成高清预览图
+
+列表图从对应原图重新转换为原尺寸、JPEG 94 质量的 sRGB 图片，不做自动提亮或色彩增强：
+
+```bash
+node scripts/regenerate-previews.mjs
+```

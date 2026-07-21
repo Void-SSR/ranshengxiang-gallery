@@ -16,6 +16,7 @@ const actionInput = document.querySelector('#actionInput');
 const actionConfirm = document.querySelector('#actionConfirm');
 const toggleDetails = document.querySelector('#toggleDetails');
 const STORAGE_KEY = 'ranshengxiang-gallery-state-v1';
+const PREVIEW_VERSION = '20260722-hd';
 
 let catalog = [];
 let state = { selectedIds: [], groups: [] };
@@ -36,6 +37,7 @@ const viewCopy = {
 
 function selected(id) { return state.selectedIds.includes(id); }
 function item(id) { return catalog.find((entry) => entry.id === id); }
+function previewSource(entry) { return `${entry.preview}?v=${PREVIEW_VERSION}`; }
 function activeGroup() { return state.groups.find((group) => group.id === activeGroupId) || state.groups[0] || null; }
 function rememberActiveGroup(id) {
   activeGroupId = id || null;
@@ -77,7 +79,7 @@ function schemeTemplate(entry, options = {}) {
   const groupControls = options.withGroups ? groupPicker(entry) : '';
   return `
     <article class="scheme" data-id="${entry.id}">
-      <div class="scheme__image" data-open="${entry.id}"><img loading="lazy" src="${entry.preview}" alt="${entry.title}"></div>
+      <div class="scheme__image" data-open="${entry.id}"><img loading="lazy" decoding="async" src="${previewSource(entry)}" alt="${entry.title}"></div>
       <div class="scheme__body">
         <div class="scheme__meta"><span>${entry.category}类方案</span><span>方案 ${entry.id}</span></div>
         <div class="scheme__title-row">
@@ -178,7 +180,7 @@ function comparisonTemplate(group) {
       </div>
       ${entries.length ? `<div class="comparison__grid" style="--mobile-columns:${mobileColumns};--mobile-rows:${mobileRows};--desktop-columns:${desktopColumns}">${entries.map((entry) => `
         <article class="compare-item">
-          <img loading="lazy" data-open="${entry.id}" src="${entry.preview}" alt="${entry.title}">
+          <img loading="lazy" decoding="async" data-open="${entry.id}" src="${previewSource(entry)}" alt="${entry.title}">
           <div class="compare-item__copy"><strong>方案${entry.id}</strong><span>${entry.category}类</span></div>
           <button class="compare-item__remove" aria-label="移出方案${entry.id}" data-group="${group.id}" data-remove-from-group="${entry.id}">×</button>
         </article>`).join('')}</div>` : `<div class="empty"><p>从预选方案中加入图片。</p></div>`}
