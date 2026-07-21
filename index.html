@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#7d2416" />
+  <title>苒盛香 · 祖传牛舌饼包装策略</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero__brand">苒盛香</div>
+    <div class="hero__copy">
+      <p>苒盛香</p>
+      <h1>祖传牛舌饼<br>包装策略</h1>
+      <span>向下浏览方案，点击“预选”收藏喜欢的方向。</span>
+      <div class="hero__actions">
+        <button data-screen-mode="mobile">手机屏幕查看</button>
+        <button data-screen-mode="desktop">电脑屏幕查看</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="nav" aria-label="方案类别">
+    <button class="nav__item is-active" data-view="A">A类 <span id="countA">…</span></button>
+    <button class="nav__item" data-view="B">B类 <span id="countB">…</span></button>
+    <button class="nav__item" data-view="C">C类 <span id="countC">…</span></button>
+    <button class="nav__item" data-view="selected">预选 <span id="countSelected">…</span></button>
+    <button class="nav__item" data-view="compare">对比 <span id="countGroups">…</span></button>
+  </nav>
+
+  <div class="display-controls">
+    <button id="toggleDetails" aria-pressed="false">隐藏文字</button>
+  </div>
+
+  <main>
+    <section class="view-head">
+      <p id="viewEyebrow">A COLLECTION</p>
+      <h2 id="viewTitle">A类方案</h2>
+      <span id="viewDescription">优先呈现概念和设计完成度较高的方向。</span>
+    </section>
+    <section id="content" class="content" aria-live="polite"><div class="loading">正在加载方案…</div></section>
+  </main>
+
+  <dialog id="viewer" class="viewer">
+    <button class="viewer__close" aria-label="关闭">×</button>
+    <img id="viewerImage" alt="" />
+    <div class="viewer__caption"><strong id="viewerTitle"></strong><span id="viewerConcept"></span></div>
+  </dialog>
+
+  <dialog id="actionDialog" class="action-dialog">
+    <form method="dialog" id="actionForm">
+      <p class="action-dialog__eyebrow" id="actionEyebrow">对比组</p>
+      <h3 id="actionTitle">新建对比组</h3>
+      <p id="actionDescription">给这一组起一个便于沟通的名称。</p>
+      <label id="actionInputWrap">
+        <span>组名</span>
+        <input id="actionInput" maxlength="24" autocomplete="off" />
+      </label>
+      <div class="action-dialog__buttons">
+        <button value="cancel" class="action-cancel">取消</button>
+        <button value="confirm" class="action-confirm" id="actionConfirm">确定</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="bottom-status">
+    <button data-view="selected"><span id="bottomSelected">…</span> 张已预选</button>
+    <button data-view="compare"><span id="bottomGroups">…</span> 个对比组</button>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
