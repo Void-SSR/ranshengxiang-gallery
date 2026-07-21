@@ -22,8 +22,10 @@ const preloadCount = document.querySelector('#preloadCount');
 const STORAGE_KEY = 'ranshengxiang-gallery-state-v1';
 const PREVIEW_VERSION = '20260722-hd';
 const PREVIEW_CACHE = `ranshengxiang-previews-${PREVIEW_VERSION}`;
+const PREVIEW_READY_KEY = 'ranshengxiang-previews-ready';
 const ORIGINAL_VERSION = '20260722-originals';
 const ORIGINAL_CACHE = `ranshengxiang-originals-${ORIGINAL_VERSION}`;
+const ORIGINAL_READY_KEY = 'ranshengxiang-originals-ready';
 
 let catalog = [];
 let state = { selectedIds: [], groups: [] };
@@ -82,6 +84,14 @@ function saveLocalState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function cacheVersionReady(key, version) {
+  try { return localStorage.getItem(key) === version; } catch { return false; }
+}
+
+function markCacheVersionReady(key, version) {
+  try { localStorage.setItem(key, version); } catch { /* Private mode may reject persistence. */ }
+}
+
 function updatePreloadProgress(done, total) {
   const percentage = total ? Math.round((done / total) * 100) : 100;
   preloadCount.textContent = String(done);
@@ -99,6 +109,11 @@ function hidePreloadGate(message = '高清方案已准备完成') {
 async function cachePreviewSet() {
   const urls = catalog.map(previewSource);
   updatePreloadProgress(0, urls.length);
+
+  if (cacheVersionReady(PREVIEW_READY_KEY, PREVIEW_VERSION)) {
+    updatePreloadProgress(urls.length, urls.length);
+    return;
+  }
 
   if (!('caches' in window)) {
     let completed = 0;
@@ -126,6 +141,7 @@ async function cachePreviewSet() {
   const cache = await caches.open(PREVIEW_CACHE);
   let cursor = 0;
   let completed = 0;
+  let failures = 0;
 
   async function worker() {
     while (cursor < urls.length) {
@@ -140,6 +156,7 @@ async function cachePreviewSet() {
         }
       } catch {
         // A failed item can still load normally when it enters the viewport.
+        failures += 1;
       }
       completed += 1;
       updatePreloadProgress(completed, urls.length);
@@ -147,9 +164,11 @@ async function cachePreviewSet() {
   }
 
   await Promise.all(Array.from({ length: Math.min(6, urls.length) }, worker));
+  if (!failures) markCacheVersionReady(PREVIEW_READY_KEY, PREVIEW_VERSION);
 }
 
 async function cacheOriginalSet() {
+  if (cacheVersionReady(ORIGINAL_READY_KEY, ORIGINAL_VERSION)) return;
   const orderedEntries = ['A', 'B', 'C'].flatMap((category) => catalog.filter((entry) => entry.category === category));
   const urls = orderedEntries.map(originalSource);
 
@@ -167,6 +186,7 @@ async function cacheOriginalSet() {
   const cache = await caches.open(ORIGINAL_CACHE);
   let cursor = 0;
   let storageUnavailable = false;
+  let failures = 0;
 
   async function worker() {
     while (cursor < urls.length && !storageUnavailable) {
@@ -176,15 +196,20 @@ async function cacheOriginalSet() {
         const cached = await cache.match(url);
         if (cached) continue;
         const response = await fetch(url, { cache: 'reload', priority: 'low' });
-        if (!response.ok) continue;
+        if (!response.ok) {
+          failures += 1;
+          continue;
+        }
         await cache.put(url, response.clone());
       } catch (error) {
+        failures += 1;
         if (error?.name === 'QuotaExceededError') storageUnavailable = true;
       }
     }
   }
 
   await Promise.all([worker(), worker()]);
+  if (!failures && !storageUnavailable) markCacheVersionReady(ORIGINAL_READY_KEY, ORIGINAL_VERSION);
 }
 
 function scheduleOriginalCache() {
