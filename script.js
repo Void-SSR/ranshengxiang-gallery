@@ -15,8 +15,15 @@ const actionInputWrap = document.querySelector('#actionInputWrap');
 const actionInput = document.querySelector('#actionInput');
 const actionConfirm = document.querySelector('#actionConfirm');
 const toggleDetails = document.querySelector('#toggleDetails');
+const preloadGate = document.querySelector('#preloadGate');
+const preloadMessage = document.querySelector('#preloadMessage');
+const preloadProgress = document.querySelector('#preloadProgress');
+const preloadCount = document.querySelector('#preloadCount');
 const STORAGE_KEY = 'ranshengxiang-gallery-state-v1';
 const PREVIEW_VERSION = '20260722-hd';
+const PREVIEW_CACHE = `ranshengxiang-previews-${PREVIEW_VERSION}`;
+const ORIGINAL_VERSION = '20260722-originals';
+const ORIGINAL_CACHE = `ranshengxiang-originals-${ORIGINAL_VERSION}`;
 
 let catalog = [];
 let state = { selectedIds: [], groups: [] };
@@ -38,6 +45,7 @@ const viewCopy = {
 function selected(id) { return state.selectedIds.includes(id); }
 function item(id) { return catalog.find((entry) => entry.id === id); }
 function previewSource(entry) { return `${entry.preview}?v=${PREVIEW_VERSION}`; }
+function originalSource(entry) { return `assets/originals/${encodeURIComponent(entry.originalFilename)}?v=${ORIGINAL_VERSION}`; }
 function activeGroup() { return state.groups.find((group) => group.id === activeGroupId) || state.groups[0] || null; }
 function rememberActiveGroup(id) {
   activeGroupId = id || null;
@@ -72,6 +80,117 @@ function loadLocalState() {
 
 function saveLocalState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function updatePreloadProgress(done, total) {
+  const percentage = total ? Math.round((done / total) * 100) : 100;
+  preloadCount.textContent = String(done);
+  preloadProgress.style.width = `${percentage}%`;
+}
+
+function hidePreloadGate(message = '高清方案已准备完成') {
+  preloadMessage.textContent = message;
+  preloadGate.classList.add('is-complete');
+  setTimeout(() => {
+    preloadGate.hidden = true;
+  }, 420);
+}
+
+async function cachePreviewSet() {
+  const urls = catalog.map(previewSource);
+  updatePreloadProgress(0, urls.length);
+
+  if (!('caches' in window)) {
+    let completed = 0;
+    await Promise.all(urls.map((url) => new Promise((resolve) => {
+      const image = new Image();
+      image.onload = image.onerror = () => {
+        completed += 1;
+        updatePreloadProgress(completed, urls.length);
+        resolve();
+      };
+      image.src = url;
+    })));
+    return;
+  }
+
+  if ('serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.register('./service-worker.js?v=20260722-cache');
+      await navigator.serviceWorker.ready;
+    } catch {
+      // Cache Storage still works as the first-load fallback.
+    }
+  }
+
+  const cache = await caches.open(PREVIEW_CACHE);
+  let cursor = 0;
+  let completed = 0;
+
+  async function worker() {
+    while (cursor < urls.length) {
+      const url = urls[cursor];
+      cursor += 1;
+      try {
+        const cached = await cache.match(url);
+        if (!cached) {
+          const response = await fetch(url, { cache: 'reload' });
+          if (!response.ok) throw new Error(`图片加载失败: ${url}`);
+          await cache.put(url, response.clone());
+        }
+      } catch {
+        // A failed item can still load normally when it enters the viewport.
+      }
+      completed += 1;
+      updatePreloadProgress(completed, urls.length);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(6, urls.length) }, worker));
+}
+
+async function cacheOriginalSet() {
+  const orderedEntries = ['A', 'B', 'C'].flatMap((category) => catalog.filter((entry) => entry.category === category));
+  const urls = orderedEntries.map(originalSource);
+
+  if (!('caches' in window)) {
+    for (const url of urls) {
+      try {
+        await fetch(url, { cache: 'force-cache', priority: 'low' });
+      } catch {
+        // Clicking the image will retry normally.
+      }
+    }
+    return;
+  }
+
+  const cache = await caches.open(ORIGINAL_CACHE);
+  let cursor = 0;
+  let storageUnavailable = false;
+
+  async function worker() {
+    while (cursor < urls.length && !storageUnavailable) {
+      const url = urls[cursor];
+      cursor += 1;
+      try {
+        const cached = await cache.match(url);
+        if (cached) continue;
+        const response = await fetch(url, { cache: 'reload', priority: 'low' });
+        if (!response.ok) continue;
+        await cache.put(url, response.clone());
+      } catch (error) {
+        if (error?.name === 'QuotaExceededError') storageUnavailable = true;
+      }
+    }
+  }
+
+  await Promise.all([worker(), worker()]);
+}
+
+function scheduleOriginalCache() {
+  const start = () => cacheOriginalSet().catch(() => {});
+  if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 2500 });
+  else setTimeout(start, 1200);
 }
 
 function schemeTemplate(entry, options = {}) {
@@ -317,7 +436,7 @@ async function copyResults() {
 function openViewer(id) {
   const entry = item(id);
   if (!entry) return;
-  viewerImage.src = `assets/originals/${encodeURIComponent(entry.originalFilename)}`;
+  viewerImage.src = originalSource(entry);
   viewerTitle.textContent = `${entry.title} · 方案${entry.id}`;
   viewerConcept.textContent = entry.concept;
   viewer.showModal();
@@ -375,8 +494,12 @@ async function init() {
     if (!response.ok) throw new Error('方案目录加载失败');
     return response.json();
   });
+  preloadCount.nextElementSibling.textContent = `/ ${catalog.length}`;
+  await cachePreviewSet();
   state = loadLocalState();
   render();
+  hidePreloadGate();
+  scheduleOriginalCache();
 }
 
 document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => setView(button.dataset.view)));
@@ -392,4 +515,7 @@ actionForm.addEventListener('submit', (event) => {
 });
 actionDialog.addEventListener('click', (event) => { if (event.target === actionDialog) actionDialog.close('cancel'); });
 
-init().catch(() => showToast('页面加载失败，请刷新页面重试'));
+init().catch(() => {
+  hidePreloadGate('部分图片将在浏览时继续加载');
+  showToast('部分图片加载较慢，浏览时将自动补齐');
+});
