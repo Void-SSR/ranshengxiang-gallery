@@ -380,15 +380,17 @@ function schemeTemplate(entry, options = {}) {
     <article class="scheme" data-id="${entry.id}">
       <div class="scheme__image" data-open="${entry.id}"><img loading="lazy" decoding="async" src="${previewSource(entry)}" alt="${entry.title}"></div>
       <div class="scheme__body">
-        <div class="scheme__meta"><span>${entry.category}类方案</span><span>方案 ${entry.id}</span></div>
+        <div class="scheme__toolbar">
+          <div class="scheme__index"><span>${entry.category}类</span><strong>${entry.id}号</strong></div>
+          <div class="scheme__actions">
+            <button class="select-button ${selectedState ? 'is-selected' : ''}" data-select="${entry.id}">${selectedState ? '✓ 已预选' : '+ 预选'}</button>
+          </div>
+        </div>
         <div class="scheme__title-row">
           <h3>${entry.title}</h3>
           <div class="proofs">${entry.proofs.map((proof) => `<span>${proof}</span>`).join('')}</div>
         </div>
-        <p class="scheme__concept"><span>概念价值</span>${entry.concept}</p>
-        <div class="scheme__actions">
-          <button class="select-button ${selectedState ? 'is-selected' : ''}" data-select="${entry.id}">${selectedState ? '✓ 已预选' : '+ 预选'}</button>
-        </div>
+        <p class="scheme__concept"><strong>消费者价值</strong>${entry.concept}</p>
         ${groupControls}
       </div>
     </article>`;
@@ -468,8 +470,8 @@ function renderCompare() {
 
 function comparisonTemplate(group) {
   const entries = group.itemIds.map(item).filter(Boolean);
-  const mobileColumns = entries.length === 6 ? 2 : 1;
-  const mobileRows = entries.length === 6 ? 3 : Math.max(1, entries.length);
+  const mobileColumns = entries.length >= 5 ? 2 : 1;
+  const mobileRows = mobileColumns === 2 ? Math.ceil(entries.length / 2) : Math.max(1, entries.length);
   const desktopColumns = Math.max(1, Math.min(3, entries.length));
   return `
     <section class="comparison">

@@ -14,6 +14,10 @@
 
 客户选择保存在各自浏览器的 `localStorage` 中，不会在不同设备之间同步。
 
+## 离线 PDF
+
+运行 `python3 scripts/generate-offline-pdfs.py` 会直接读取 `assets/originals` 内的 80 张 PNG 原图，在项目级 `output/pdf/` 生成手机单列版和电脑六图对比版。
+
 ## 重新生成高清预览图
 
 列表图从对应原图重新转换为原尺寸、JPEG 94 质量的 sRGB 图片，不做自动提亮或色彩增强：
